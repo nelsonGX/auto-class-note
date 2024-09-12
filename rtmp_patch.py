@@ -18,6 +18,9 @@ logger.setLevel(logging.DEBUG)
 
 # Check if GPU is available
 device = "cuda" if torch.cuda.is_available() else "cpu"
+# warn if running on CPU
+if device == "cpu":
+    logger.warning("GPU not available, running on CPU.")
 
 # Load Whisper model and move to GPU if available
 model = whisper.load_model("medium", device=device)

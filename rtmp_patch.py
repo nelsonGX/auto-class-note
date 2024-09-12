@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 import struct
+import time
 from typing import List, Optional
 import numpy as np
 import whisper
@@ -30,7 +31,7 @@ SILENCE_THRESHOLD = 0.005
 SILENCE_CHUNKS = 50  # Number of consecutive chunks that are considered silence
 MAX_BUFFER_DURATION = 30  # Max seconds to buffer before forcing transcription
 MIN_NON_SILENT_DURATION = 1.0  # Minimum amount of speech duration (in seconds) before transcribing
-
+TARGET_SAMPLE_RATE = 16000  # Audio sample rate in Hz
 class AACParser:
     def __init__(self):
         self.buffer = b""
@@ -116,7 +117,7 @@ def enough_speech(buffer: List[np.ndarray]) -> bool:
     total_duration = sum(len(chunk) for chunk in buffer) / 16000  # Assuming 16kHz sample rate
     return non_silent_duration > 0.1 and total_duration >= MIN_NON_SILENT_DURATION
 
-async def process_buffer(buffer: List[np.ndarray]):
+async def process_buffer(buffer: List[np.ndarray], start_time: float, audio_duration: float):
     """Process and transcribe the buffer if it contains enough speech."""
     if buffer and enough_speech(buffer):
         logger.info(f"Transcribing... buffered {len(buffer)} chunks.")
@@ -129,9 +130,10 @@ async def process_buffer(buffer: List[np.ndarray]):
 
         # Transcribe the accumulated audio using Whisper, specifying Traditional Chinese ('zh-tw')
         result = model.transcribe(audio_np, language='zh')
-
+        current_time = time.time()
+        latency = current_time - start_time - audio_duration
         # Print the transcription in real time
-        logger.info(f"Transcription: {result['text']}")
+        logger.info(f"Transcription: {result['text']}, Model_Latency: {latency:.2f}s")
     else:
         logger.info("Discarded buffer due to insufficient speech.")
 
@@ -141,6 +143,8 @@ class RTMP2STTController(SimpleRTMPController):
         self.silence_counter = 0
         self.last_process_time = asyncio.get_event_loop().time()
         self.aac_parser = AACParser()
+        self.start_time = time.time()
+        self.audio_duration = 0
         super().__init__()
 
     async def on_audio_message(self, session, message) -> None:
@@ -155,6 +159,10 @@ class RTMP2STTController(SimpleRTMPController):
                 if raw_audio.format == 10:  # AAC
                     pcm_data = raw_audio.pcm
                     if len(pcm_data) > 0:
+                        #calculate audio duration
+                        chunk_duration = len(pcm_data) / TARGET_SAMPLE_RATE
+                        self.audio_duration += chunk_duration
+
                         self.buffer.append(pcm_data)
                         
                         if is_silence(pcm_data):
@@ -166,7 +174,7 @@ class RTMP2STTController(SimpleRTMPController):
                         buffer_duration = current_time - self.last_process_time
 
                         if self.silence_counter > SILENCE_CHUNKS or buffer_duration > MAX_BUFFER_DURATION:
-                            await process_buffer(self.buffer)
+                            await process_buffer(self.buffer, self.start_time, self.audio_duration)
                             self.buffer = []
                             self.silence_counter = 0
                             self.last_process_time = current_time
